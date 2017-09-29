@@ -261,6 +261,7 @@ class Service(SimpleService):
             self.error('Failed to connect to %s. Error: %s' % (str(conf), error))
             return False
         try:
+            self.adjust_queries_()
             cursor = self.connection.cursor()
             self.databases = discover_databases_(cursor, QUERIES['FIND_DATABASES'])
             is_superuser = check_if_superuser_(cursor, QUERIES['IF_SUPERUSER'])
@@ -276,6 +277,31 @@ class Service(SimpleService):
         except Exception as error:
             self.error(str(error))
             return False
+
+    def adjust_queries_(self):
+        ver = self.connection.server_version
+        if ver < 90100:
+            def empty_column(col_name):
+                QUERIES['DATABASE'] = QUERIES['DATABASE'].replace('sum({0})'.format(col_name), '-1')
+
+            QUERY_STATS.pop(QUERIES['DATABASE'])
+            columns = ['conflicts']
+            if ver < 80300:
+                columns.exend('tup_returned', 'tup_fetched', 'tup_inserted', 'tup_updated', 'tup_deleted')
+            for c in columns:
+                empty_column(c)
+
+            QUERY_STATS[QUERIES['DATABASE']] = METRICS['DATABASE']
+        if ver < 90100:
+            QUERY_STATS.pop(QUERIES['BACKENDS'])
+            QUERIES['BACKENDS'] = """
+SELECT
+    count(*) - (SELECT count(*) FROM pg_stat_activity WHERE waiting IS FALSE) AS backends_active,
+    (SELECT count(*) FROM pg_stat_activity WHERE waiting IS FALSE) AS backends_idle
+FROM  pg_stat_activity;"""
+            QUERY_STATS[QUERIES['BACKENDS']] = METRICS['BACKENDS']
+
+        self.queries = QUERY_STATS.copy()
 
     def add_additional_queries_(self, is_superuser):
         if self.index_stats:
